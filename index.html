@@ -27,7 +27,6 @@
         <span class="logo-text">SamosaScope</span>
       </div>
       <div class="header-right">
-        <div class="header-badge">Hackathon Edition</div>
         <button class="settings-btn" id="settings-btn" aria-label="API Key Settings" title="Configure Gemini API Key">⚙️</button>
       </div>
     </div>
@@ -71,8 +70,10 @@
         <span class="gradient-text">Accuracy Finder</span>
       </h1>
       <p class="hero-sub">
-        Drop a pic of your samosa. Our AI + CV pipeline calculates<br class="hide-mobile"/>
-        exactly how triangular that golden boy is. 🔺
+        Is it a samosa or a suspicious triangle?
+      </p>
+      <p class="hero-sub-small">
+        Because even samosas deserve perfect score.
       </p>
     </section>
 
@@ -146,9 +147,9 @@
         <p class="loading-text" id="loading-text">Analysing…</p>
         <div class="loading-steps">
           <span class="step" id="step-1">📥 Reading image</span>
-          <span class="step" id="step-2">🤖 AI detection</span>
-          <span class="step" id="step-3">📐 Corner refinement</span>
-          <span class="step" id="step-4">📊 Calculating score</span>
+          <span class="step" id="step-2">✂️ Removing background (HSV segmentation)</span>
+          <span class="step" id="step-3">📐 Detecting 3 outer corners</span>
+          <span class="step" id="step-4">📊 Calculating triangle accuracy</span>
         </div>
       </div>
     </section>
@@ -170,8 +171,21 @@
             </div>
           </div>
 
+          <!-- View Mode Switcher (Background Removed vs Original) -->
+          <div class="view-mode-bar" id="view-mode-bar" role="tablist" aria-label="Image view options">
+            <button class="view-btn active" id="view-nobg-btn" data-view="nobg" role="tab" aria-selected="true">
+              ✂️ Isolated Samosa (No BG)
+            </button>
+            <button class="view-btn" id="view-original-btn" data-view="original" role="tab" aria-selected="false">
+              🖼️ Original Photo
+            </button>
+            <button class="view-btn" id="view-mask-btn" data-view="mask" role="tab" aria-selected="false">
+              🎭 Samosa Mask
+            </button>
+          </div>
+
           <!-- Canvas + precision overlay wrapper -->
-          <div class="canvas-wrap" id="canvas-wrap">
+          <div class="canvas-wrap checkerboard-bg" id="canvas-wrap">
             <canvas id="result-canvas" aria-label="Samosa with triangle overlay"></canvas>
 
             <!-- Precision mode overlay (shown on top of canvas) -->
@@ -197,10 +211,35 @@
             </div>
           </div>
 
+          <!-- Interactive 4-Step Pipeline Stepper (As in How It Works diagram) -->
+          <div class="pipeline-stepper" id="pipeline-stepper" aria-label="Analysis pipeline steps">
+            <button class="pipeline-step-card" data-stage="1" id="step-card-1" title="Click to preview Original Image">
+              <span class="step-num">1</span>
+              <span class="step-lbl">Original</span>
+            </button>
+            <span class="pipeline-arrow" aria-hidden="true">→</span>
+            <button class="pipeline-step-card" data-stage="2" id="step-card-2" title="Click to preview Background Removal">
+              <span class="step-num">2</span>
+              <span class="step-lbl">BG Removal</span>
+            </button>
+            <span class="pipeline-arrow" aria-hidden="true">→</span>
+            <button class="pipeline-step-card" data-stage="3" id="step-card-3" title="Click to preview Corner Detection">
+              <span class="step-num">3</span>
+              <span class="step-lbl">Corners</span>
+            </button>
+            <span class="pipeline-arrow" aria-hidden="true">→</span>
+            <button class="pipeline-step-card active" data-stage="4" id="step-card-4" title="Click to preview Measurement & Accuracy">
+              <span class="step-num">4</span>
+              <span class="step-lbl">Accuracy</span>
+            </button>
+          </div>
+
           <div class="image-legend" id="image-legend">
-            <span class="legend-item"><span class="dot dot-green"></span> Detected contour</span>
-            <span class="legend-item"><span class="dot dot-orange"></span> Best-fit triangle</span>
-            <span class="legend-item"><span class="dot dot-cyan"></span> Vertices</span>
+            <span class="legend-item"><span class="dot dot-red"></span> Apex (A)</span>
+            <span class="legend-item"><span class="dot dot-green"></span> Bottom-Left (B)</span>
+            <span class="legend-item"><span class="dot dot-blue"></span> Bottom-Right (C)</span>
+            <span class="legend-item"><span class="dot dot-neon"></span> Triangle</span>
+            <span class="legend-item"><span class="dot dot-contour"></span> Contour</span>
           </div>
         </div>
 
@@ -231,6 +270,20 @@
           <!-- Result label -->
           <div class="result-label" id="result-label"></div>
 
+          <!-- Accuracy Formula Box (from infographic) -->
+          <div class="formula-card" id="formula-card">
+            <div class="formula-header">
+              <span class="formula-tag">📐 Accuracy Formula</span>
+              <span class="formula-ideal">Ideal: 60° · 100%</span>
+            </div>
+            <div class="formula-math">
+              Accuracy = (1 − <sup>|a − b| + |b − c| + |c − a|</sup>&frasl;<sub>3 × s</sub>) × 100
+            </div>
+            <div class="formula-details" id="formula-details">
+              <!-- Live formula variables inserted by JS -->
+            </div>
+          </div>
+
           <!-- AI confidence bar (shown in AI mode) -->
           <div class="confidence-block hidden" id="confidence-block">
             <div class="confidence-label-row">
@@ -259,12 +312,22 @@
             <h3 class="measurements-title">📍 Detected Vertices</h3>
             <table class="vertices-table" id="vertices-table">
               <thead>
-                <tr><th>Vertex</th><th>X</th><th>Y</th></tr>
+                <tr><th>Vertex</th><th>X</th><th>Y</th><th>Angle</th></tr>
               </thead>
               <tbody id="vertices-body">
                 <!-- Populated by JS -->
               </tbody>
             </table>
+          </div>
+
+          <!-- Why it works callout -->
+          <div class="why-works-card">
+            <div class="why-works-title">💡 Why Background Removal Works</div>
+            <ul class="why-works-list">
+              <li>Isolates the samosa from plates, tables, cutlery &amp; hands.</li>
+              <li>Eliminates background edges so contour detection is 100% clean.</li>
+              <li>Snaps corners precisely to the 3 actual fried pastry tips.</li>
+            </ul>
           </div>
 
           <!-- Try again button -->
@@ -286,8 +349,7 @@
 
   <!-- Footer -->
   <footer class="site-footer">
-    <p>Made with ❤️ &amp; too much time at <strong>TinkerHub Useless Projects</strong></p>
-    <p class="footer-sub">Real CV. Real AI. Real Samosas. Real Nonsense.</p>
+    <p>no bias just triangles</p>
   </footer>
 
   <!-- Hidden processing canvas -->
