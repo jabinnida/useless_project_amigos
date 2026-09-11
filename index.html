@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Samosa Triangle Accuracy Finder 🔺</title>
+  <meta name="description" content="Upload a photo of a samosa and find out how triangular it really is. AI-powered + real computer vision." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Background decoration -->
+  <div class="bg-blobs" aria-hidden="true">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+  </div>
+
+  <!-- Header -->
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-icon">🔺</span>
+        <span class="logo-text">SamosaScope</span>
+      </div>
+      <div class="header-right">
+        <div class="header-badge">Hackathon Edition</div>
+        <button class="settings-btn" id="settings-btn" aria-label="API Key Settings" title="Configure Gemini API Key">⚙️</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- API Key Modal -->
+  <div class="modal-backdrop hidden" id="api-modal-backdrop" role="dialog" aria-modal="true" aria-label="API Key Settings">
+    <div class="api-modal glass-card">
+      <button class="modal-close" id="api-modal-close" aria-label="Close">✕</button>
+      <div class="api-modal-icon">🔑</div>
+      <h2 class="api-modal-title">Gemini API Key</h2>
+      <p class="api-modal-desc">
+        Your key powers the AI samosa detection. It's stored <strong>only in your browser</strong>
+        (localStorage) and never sent to any server — the app calls Google directly.
+      </p>
+      <div class="api-key-row">
+        <input type="password" id="api-key-input" class="api-key-input"
+               placeholder="AIza…" autocomplete="off" spellcheck="false" />
+        <button class="btn-eye" id="api-key-toggle" aria-label="Toggle visibility">👁️</button>
+      </div>
+      <div class="api-key-status" id="api-key-status"></div>
+      <div class="api-modal-actions">
+        <button class="btn btn-primary" id="api-key-save">Save Key</button>
+        <button class="btn btn-outline" id="api-key-cancel">Cancel</button>
+      </div>
+      <button class="api-key-clear" id="api-key-clear">🗑 Remove saved key</button>
+      <p class="api-modal-hint">
+        Get a free key at
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">aistudio.google.com</a>
+      </p>
+    </div>
+  </div>
+
+  <!-- Main content -->
+  <main class="main-content">
+
+    <!-- Hero section -->
+    <section class="hero" id="hero">
+      <h1 class="hero-title">
+        Samosa Triangle<br/>
+        <span class="gradient-text">Accuracy Finder</span>
+      </h1>
+      <p class="hero-sub">
+        Drop a pic of your samosa. Our AI + CV pipeline calculates<br class="hide-mobile"/>
+        exactly how triangular that golden boy is. 🔺
+      </p>
+    </section>
+
+    <!-- Upload section -->
+    <section class="upload-section" id="upload-section">
+      <div class="upload-card glass-card" id="upload-card">
+        <div class="upload-zone" id="upload-zone" role="button" tabindex="0" aria-label="Upload samosa image">
+          <div class="upload-icon-wrap" id="upload-icon-wrap">
+            <svg class="upload-triangle-svg" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <polygon points="40,8 72,68 8,68" stroke="url(#grad1)" stroke-width="3" fill="none" stroke-linejoin="round"/>
+              <defs>
+                <linearGradient id="grad1" x1="0" y1="0" x2="80" y2="80" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#ff6b2b"/>
+                  <stop offset="100%" stop-color="#ffd700"/>
+                </linearGradient>
+              </defs>
+            </svg>
+            <span class="upload-emoji">🫓</span>
+          </div>
+          <p class="upload-primary">Drop your samosa photo here</p>
+          <p class="upload-secondary">or <span class="upload-link">click to browse</span></p>
+          <p class="upload-hint">JPG, PNG, WEBP — up to 20 MB</p>
+        </div>
+        <input type="file" id="file-input" accept="image/*" hidden aria-hidden="true" />
+      </div>
+
+      <!-- Mode selector -->
+      <div class="mode-selector" id="mode-selector" role="group" aria-label="Detection mode">
+        <button class="mode-pill active" id="mode-ai" data-mode="ai" aria-pressed="true">
+          🤖 AI Detect
+          <span class="mode-pill-sub">Gemini Vision</span>
+        </button>
+        <button class="mode-pill" id="mode-precision" data-mode="precision" aria-pressed="false">
+          ✋ Precision
+          <span class="mode-pill-sub">Click corners</span>
+        </button>
+      </div>
+
+      <!-- No-key nudge (shown when AI mode selected but no key) -->
+      <div class="no-key-nudge hidden" id="no-key-nudge">
+        <span>🔑 Add your Gemini key for AI detection —</span>
+        <button class="nudge-link" id="nudge-settings-btn">configure now</button>
+      </div>
+
+      <!-- Action buttons -->
+      <div class="upload-actions">
+        <button class="btn btn-outline" id="camera-btn" aria-label="Capture from camera">
+          📷 Use Camera
+        </button>
+        <button class="btn btn-sample" id="sample-btn" aria-label="Test with sample difficult samosa">
+          🥟 Test Difficult Samosa
+        </button>
+      </div>
+      <input type="file" id="camera-input" accept="image/*" capture="environment" hidden aria-hidden="true" />
+    </section>
+
+    <!-- Loading state -->
+    <section class="loading-section hidden" id="loading-section" aria-live="polite" aria-label="Analyzing samosa">
+      <div class="loading-card glass-card">
+        <div class="loading-spinner" aria-hidden="true">
+          <svg viewBox="0 0 60 60" class="spinner-svg">
+            <polygon points="30,4 56,52 4,52" stroke="url(#spinGrad)" stroke-width="3" fill="none" stroke-linejoin="round"/>
+            <defs>
+              <linearGradient id="spinGrad" x1="0" y1="0" x2="60" y2="60" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#ff6b2b"/>
+                <stop offset="100%" stop-color="#ffd700"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <p class="loading-text" id="loading-text">Analysing…</p>
+        <div class="loading-steps">
+          <span class="step" id="step-1">📥 Reading image</span>
+          <span class="step" id="step-2">🤖 AI detection</span>
+          <span class="step" id="step-3">📐 Corner refinement</span>
+          <span class="step" id="step-4">📊 Calculating score</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Results section -->
+    <section class="results-section hidden" id="results-section" aria-live="polite">
+      <div class="results-grid">
+
+        <!-- Image panel -->
+        <div class="image-panel glass-card">
+          <div class="panel-title-row">
+            <h2 class="panel-title">Analysed Samosa</h2>
+            <div class="panel-header-actions">
+              <label class="debug-toggle-wrap" title="Toggle AI detection & refinement debug overlay">
+                <input type="checkbox" id="debug-toggle" />
+                <span class="debug-toggle-label">🛠️ Debug</span>
+              </label>
+              <div class="detection-badge" id="detection-badge"></div>
+            </div>
+          </div>
+
+          <!-- Canvas + precision overlay wrapper -->
+          <div class="canvas-wrap" id="canvas-wrap">
+            <canvas id="result-canvas" aria-label="Samosa with triangle overlay"></canvas>
+
+            <!-- Precision mode overlay (shown on top of canvas) -->
+            <div class="precision-overlay hidden" id="precision-overlay">
+              <div class="precision-hint" id="precision-hint">
+                Click the <strong id="corner-name">apex (top tip)</strong> of the samosa
+              </div>
+              <!-- Corner dot markers inserted by JS -->
+            </div>
+          </div>
+
+          <!-- Precision mode controls (shown below canvas in precision mode) -->
+          <div class="precision-controls hidden" id="precision-controls">
+            <div class="precision-progress">
+              <span class="prec-dot" id="prec-dot-0"></span>
+              <span class="prec-dot" id="prec-dot-1"></span>
+              <span class="prec-dot" id="prec-dot-2"></span>
+              <span class="prec-count" id="prec-count">0 / 3 corners placed</span>
+            </div>
+            <div class="precision-btns">
+              <button class="btn btn-primary hidden" id="precision-calculate">✓ Calculate Score</button>
+              <button class="btn btn-outline btn-sm" id="precision-undo">↩ Undo</button>
+            </div>
+          </div>
+
+          <div class="image-legend" id="image-legend">
+            <span class="legend-item"><span class="dot dot-green"></span> Detected contour</span>
+            <span class="legend-item"><span class="dot dot-orange"></span> Best-fit triangle</span>
+            <span class="legend-item"><span class="dot dot-cyan"></span> Vertices</span>
+          </div>
+        </div>
+
+        <!-- Score panel -->
+        <div class="score-panel glass-card">
+          <h2 class="panel-title">Triangle Score</h2>
+
+          <!-- Score ring -->
+          <div class="score-ring-wrap">
+            <svg class="score-ring" viewBox="0 0 200 200" aria-hidden="true">
+              <circle class="ring-bg" cx="100" cy="100" r="82" />
+              <circle class="ring-fill" id="ring-fill" cx="100" cy="100" r="82"
+                stroke-dasharray="515.22"
+                stroke-dashoffset="515.22" />
+              <defs>
+                <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#ff6b2b"/>
+                  <stop offset="100%" stop-color="#ffd700"/>
+                </linearGradient>
+              </defs>
+            </svg>
+            <div class="score-center">
+              <span class="score-number" id="score-number">0</span>
+              <span class="score-percent">%</span>
+            </div>
+          </div>
+
+          <!-- Result label -->
+          <div class="result-label" id="result-label"></div>
+
+          <!-- AI confidence bar (shown in AI mode) -->
+          <div class="confidence-block hidden" id="confidence-block">
+            <div class="confidence-label-row">
+              <span class="confidence-label">AI Confidence</span>
+              <span class="confidence-pct" id="confidence-pct">—</span>
+            </div>
+            <div class="confidence-bar-bg">
+              <div class="confidence-bar-fill" id="confidence-bar-fill"></div>
+            </div>
+            <p class="confidence-note hidden" id="confidence-note">
+              🤔 AI isn't confident about the corners.
+              <button class="inline-btn" id="switch-precision-btn">Switch to Precision Mode</button>
+            </p>
+          </div>
+
+          <!-- Measurements -->
+          <div class="measurements">
+            <h3 class="measurements-title">📏 Measurements</h3>
+            <div class="measurement-grid" id="measurement-grid">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+
+          <!-- Vertices table -->
+          <div class="vertices-section">
+            <h3 class="measurements-title">📍 Detected Vertices</h3>
+            <table class="vertices-table" id="vertices-table">
+              <thead>
+                <tr><th>Vertex</th><th>X</th><th>Y</th></tr>
+              </thead>
+              <tbody id="vertices-body">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Try again button -->
+          <button class="btn btn-primary btn-full" id="retry-btn">
+            🔄 Try Another Samosa
+          </button>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Error message -->
+    <div class="error-toast hidden" id="error-toast" role="alert">
+      <span class="error-icon">⚠️</span>
+      <span id="error-message">Something went wrong.</span>
+    </div>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <p>Made with ❤️ &amp; too much time at <strong>TinkerHub Useless Projects</strong></p>
+    <p class="footer-sub">Real CV. Real AI. Real Samosas. Real Nonsense.</p>
+  </footer>
+
+  <!-- Hidden processing canvas -->
+  <canvas id="proc-canvas" hidden aria-hidden="true"></canvas>
+
+  <script src="app.js"></script>
+</body>
+</html>
