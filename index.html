@@ -60,6 +60,32 @@
     </div>
   </div>
 
+  <!-- Live Camera Modal -->
+  <div class="modal-backdrop hidden" id="camera-modal" role="dialog" aria-modal="true" aria-label="Camera Capture">
+    <div class="camera-modal glass-card">
+      <div class="camera-modal-header">
+        <h2 class="camera-modal-title">📸 Live Samosa Camera</h2>
+        <button class="modal-close" id="camera-close-btn" aria-label="Close camera">✕</button>
+      </div>
+      <div class="camera-viewfinder-wrap">
+        <video id="camera-video" autoplay playsinline muted></video>
+        <div class="camera-reticle" aria-hidden="true">
+          <svg viewBox="0 0 100 100" class="camera-triangle-svg">
+            <polygon points="50,12 90,85 10,85" />
+          </svg>
+          <span class="camera-reticle-text">Align samosa inside triangle</span>
+        </div>
+      </div>
+      <div class="camera-controls">
+        <button class="btn btn-outline btn-sm" id="camera-switch-btn" title="Switch front/back camera">🔄 Flip</button>
+        <button class="camera-shutter-btn" id="camera-shutter-btn" aria-label="Snap Photo" title="Snap Photo">
+          <span class="shutter-circle"></span>
+        </button>
+        <button class="btn btn-outline btn-sm" id="camera-cancel-btn">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Main content -->
   <main class="main-content">
 
@@ -123,9 +149,6 @@
         <button class="btn btn-outline" id="camera-btn" aria-label="Capture from camera">
           📷 Use Camera
         </button>
-        <button class="btn btn-sample" id="sample-btn" aria-label="Test with sample difficult samosa">
-          🥟 Test Difficult Samosa
-        </button>
       </div>
       <input type="file" id="camera-input" accept="image/*" capture="environment" hidden aria-hidden="true" />
     </section>
@@ -171,21 +194,8 @@
             </div>
           </div>
 
-          <!-- View Mode Switcher (Background Removed vs Original) -->
-          <div class="view-mode-bar" id="view-mode-bar" role="tablist" aria-label="Image view options">
-            <button class="view-btn active" id="view-nobg-btn" data-view="nobg" role="tab" aria-selected="true">
-              ✂️ Isolated Samosa (No BG)
-            </button>
-            <button class="view-btn" id="view-original-btn" data-view="original" role="tab" aria-selected="false">
-              🖼️ Original Photo
-            </button>
-            <button class="view-btn" id="view-mask-btn" data-view="mask" role="tab" aria-selected="false">
-              🎭 Samosa Mask
-            </button>
-          </div>
-
           <!-- Canvas + precision overlay wrapper -->
-          <div class="canvas-wrap checkerboard-bg" id="canvas-wrap">
+          <div class="canvas-wrap" id="canvas-wrap">
             <canvas id="result-canvas" aria-label="Samosa with triangle overlay"></canvas>
 
             <!-- Precision mode overlay (shown on top of canvas) -->
@@ -209,29 +219,6 @@
               <button class="btn btn-primary hidden" id="precision-calculate">✓ Calculate Score</button>
               <button class="btn btn-outline btn-sm" id="precision-undo">↩ Undo</button>
             </div>
-          </div>
-
-          <!-- Interactive 4-Step Pipeline Stepper (As in How It Works diagram) -->
-          <div class="pipeline-stepper" id="pipeline-stepper" aria-label="Analysis pipeline steps">
-            <button class="pipeline-step-card" data-stage="1" id="step-card-1" title="Click to preview Original Image">
-              <span class="step-num">1</span>
-              <span class="step-lbl">Original</span>
-            </button>
-            <span class="pipeline-arrow" aria-hidden="true">→</span>
-            <button class="pipeline-step-card" data-stage="2" id="step-card-2" title="Click to preview Background Removal">
-              <span class="step-num">2</span>
-              <span class="step-lbl">BG Removal</span>
-            </button>
-            <span class="pipeline-arrow" aria-hidden="true">→</span>
-            <button class="pipeline-step-card" data-stage="3" id="step-card-3" title="Click to preview Corner Detection">
-              <span class="step-num">3</span>
-              <span class="step-lbl">Corners</span>
-            </button>
-            <span class="pipeline-arrow" aria-hidden="true">→</span>
-            <button class="pipeline-step-card active" data-stage="4" id="step-card-4" title="Click to preview Measurement & Accuracy">
-              <span class="step-num">4</span>
-              <span class="step-lbl">Accuracy</span>
-            </button>
           </div>
 
           <div class="image-legend" id="image-legend">

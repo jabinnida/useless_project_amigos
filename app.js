@@ -1,35 +1,20 @@
 /**
  * Samosa Triangle Accuracy Finder — app.js
- * Complete Pipeline: Background Removal → Corner Detection → Triangle Accuracy
  *
- * 1. Background Removal:
+ * PIPELINE:
+ * 1. Image Input: File Upload, Live Camera Viewfinder, or Test Samosa.
+ * 2. Background Removal (Backend/Internal):
+ *    - Golden crust HSV color thresholding (Hue: 12°–58°, Saturation: 0.12–0.95, Value: 0.14–0.98)
  *    - Adaptive border background color modeling (distinguishes tables, plates, countertops)
- *    - Golden pastry crust HSV color space thresholding (Hue: 12°–58°, Saturation: 0.12–0.95, Value: 0.14–0.98)
- *    - Distance & difference metric against background palette
- *    - Central prior saliency weighting
- *    - Morphological Close (fuses crust blisters & folds) + Open (eliminates speckle noise)
- *    - Connected Component Analysis (selects primary central samosa blob)
- *    - Hole-filling via boundary flood fill
- *    - Generates transparent isolated samosa canvas (feathered alpha channel)
- *
- * 2. Corner Detection:
- *    - Contour extraction & Monotone Chain Convex Hull
- *    - Identifies 3 true physical corners:
- *      • Apex (Top tip) — Neon Red
- *      • Bottom-Left (BL) — Neon Green
- *      • Bottom-Right (BR) — Neon Blue
- *    - Local exterior curvature & sharpness angle optimization
- *
- * 3. Mathematical Triangle Accuracy (Infographic Formula):
- *    - Side lengths: a = BC, b = CA, c = AB
- *    - Average side length: s = (a + b + c) / 3
- *    - Side delta: diff = |a - b| + |b - c| + |c - a|
- *    - Accuracy = (1 - diff / (3 * s)) * 100
- *    - Interior angles: Law of Cosines (A, B, C; ideal = 60° each)
- *
- * 4. Interactive Views & 4-Step Stepper:
- *    - View Switcher: Isolated Samosa (No BG) | Original Photo | Samosa Mask
- *    - 4 Pipeline Preview Steps: 1. Original → 2. BG Removal → 3. Corners → 4. Accuracy
+ *    - Connected Component Analysis to isolate the central samosa from background clutter.
+ *    - Hole-filling and morphological operations.
+ * 3. 3-Corner Detection:
+ *    - Traces the clean isolated samosa contour & convex hull.
+ *    - Snaps to the 3 actual physical corners (Apex, Bottom-Left, Bottom-Right) using turn-angle curvature.
+ * 4. Display & Accuracy:
+ *    - Plots the 3 detected corners and glowing triangle OVER THE ORIGINAL PHOTO with background intact.
+ *    - Calculates the accuracy using the infographic formula:
+ *        Accuracy = (1 - (|a - b| + |b - c| + |c - a|) / (3 * s)) * 100
  */
 
 'use strict';
@@ -41,16 +26,13 @@ const CONFIG = {
   maxProcessDim: 720,        // standard dimension for fast CV & AI inference
   geminiModel: 'gemini-2.5-flash',
   fallbackModel: 'gemini-2.0-flash',
-  confidenceThreshold: 0.55,
-  localSearchRadiusPct: 0.15 // fraction of samosa size for corner snapping
+  confidenceThreshold: 0.55
 };
 
 const STATE = {
   apiKey: localStorage.getItem('gemini_api_key') || '',
   mode: 'ai',                // 'ai' | 'precision'
   debugMode: false,
-  viewMode: 'nobg',          // 'nobg' | 'original' | 'mask'
-  pipelineStage: 4,          // 1: Original, 2: BG Removed, 3: Corners, 4: Accuracy
   rawImage: null,            // Source Image
   scaledCanvas: null,        // Resized processing canvas
   scaleRatio: 1.0,
@@ -224,16 +206,6 @@ function computeGeometryResults(triangle, samosaMask, hullPts, W, H) {
   };
 }
 
-/** Distance from point P to line segment VW */
-function pointToSegmentDist(p, v, w) {
-  const l2 = (w.x - v.x) ** 2 + (w.y - v.y) ** 2;
-  if (l2 === 0) return dist(p, v);
-  let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
-  t = Math.max(0, Math.min(1, t));
-  const proj = { x: v.x + t * (w.x - v.x), y: v.y + t * (w.y - v.y) };
-  return dist(p, proj);
-}
-
 /** Rasterize triangle into binary Uint8Array mask */
 function rasterizeTriangle(p1, p2, p3, w, h) {
   const mask = new Uint8Array(w * h);
@@ -261,21 +233,12 @@ function rasterizeTriangle(p1, p2, p3, w, h) {
 }
 
 /* ═══════════════════════════════════════════════════════
-   3. BACKGROUND REMOVAL & SEGMENTATION ENGINE
+   3. BACKGROUND REMOVAL (BACKEND / INTERNAL PROCESSING)
    ═══════════════════════════════════════════════════════ */
 
 /**
- * Removes background from the image canvas and isolates the samosa.
- *
- * Techniques:
- *  1. Border Background Color Profiling (identifies tables, plates, countertops)
- *  2. HSV Golden Crust Segmenter (Hue 12°–58°, Saturation 0.12–0.95, Value 0.14–0.98)
- *  3. Difference & Distance metric against background border palette
- *  4. Central Prior Saliency Weighting
- *  5. Morphological Close + Open
- *  6. Connected Component Analysis (selects the primary central samosa blob)
- *  7. Hole-filling via boundary flood fill
- *  8. Transparent Isolated Canvas Generation (with feathered alpha)
+ * Removes background behind the scenes to extract a clean samosa contour.
+ * (The isolated silhouette is used purely to compute the 3 true corners).
  */
 function removeBackground(sourceCanvas, bbox = null) {
   const W = sourceCanvas.width, H = sourceCanvas.height;
@@ -283,7 +246,7 @@ function removeBackground(sourceCanvas, bbox = null) {
   const imgData = ctx.getImageData(0, 0, W, H);
   const data = imgData.data;
 
-  // 1. Check if image already has a transparent background (e.g., PNG with alpha)
+  // 1. Check if image already has transparent background
   let transparentPixelCount = 0;
   for (let i = 3; i < data.length; i += 4) {
     if (data[i] < 50) transparentPixelCount++;
@@ -316,7 +279,7 @@ function removeBackground(sourceCanvas, bbox = null) {
   const avgBgG = borderCount > 0 ? bgGSum / borderCount : 240;
   const avgBgB = borderCount > 0 ? bgBSum / borderCount : 240;
 
-  // 3. Define bounding box bounds if provided (e.g. from AI)
+  // 3. Define bounds
   const xMin = bbox ? Math.max(0, bbox.xmin) : 0;
   const xMax = bbox ? Math.min(W - 1, bbox.xmax) : W - 1;
   const yMin = bbox ? Math.max(0, bbox.ymin) : 0;
@@ -331,24 +294,18 @@ function removeBackground(sourceCanvas, bbox = null) {
     for (let x = 0; x < W; x++) {
       const idx = (y * W + x) * 4;
 
-      // Honor existing transparency
       if (hasExistingTransparency) {
         if (data[idx + 3] > 80) rawMask[y * W + x] = 255;
         continue;
       }
 
-      // Restrict to bbox if given
-      if (x < xMin || x > xMax || y < yMin || y > yMax) {
-        continue;
-      }
+      if (x < xMin || x > xMax || y < yMin || y > yMax) continue;
 
       const r = data[idx], g = data[idx + 1], b = data[idx + 2];
       const hsv = rgbToHsv(r, g, b);
 
-      // Distance from average background
       const distFromBg = Math.hypot(r - avgBgR, g - avgBgG, b - avgBgB);
 
-      // Distance from closest sample in border palette
       let minDistToBorderSample = Infinity;
       const stepCheck = Math.max(1, Math.floor(borderColors.length / 30));
       for (let k = 0; k < borderColors.length; k += stepCheck) {
@@ -357,23 +314,18 @@ function removeBackground(sourceCanvas, bbox = null) {
         if (d < minDistToBorderSample) minDistToBorderSample = d;
       }
 
-      // Saliency center prior
       const centerDistNorm = Math.hypot(x - centerX, y - centerY) / maxCenterDist;
 
-      // Fried pastry color characteristics:
-      // Golden yellow/orange/amber hue
       const isPastryHue = (hsv.h >= 10 && hsv.h <= 60);
       const isPastrySat = (hsv.s >= 0.12 && hsv.s <= 0.96);
       const isPastryVal = (hsv.v >= 0.14 && hsv.v <= 0.98);
       const isWarm = (r > b + 10) && (r >= g * 0.82) && (r > 50);
 
-      // Background rejection tests:
       const isDifferentFromBg = (distFromBg > 22 && minDistToBorderSample > 18);
       const isNeutralPlate = (hsv.s < 0.10) && (r > 190 && g > 190 && b > 190);
       const isBlackShadow = (hsv.v < 0.10);
 
       if (isWarm && isPastryHue && isPastrySat && isPastryVal && isDifferentFromBg && !isNeutralPlate && !isBlackShadow) {
-        // Border decay: require higher warmth near edge
         if (centerDistNorm > 0.85 && (!bbox)) {
           if (isWarm && hsv.s > 0.25 && distFromBg > 35) {
             rawMask[y * W + x] = 255;
@@ -385,7 +337,7 @@ function removeBackground(sourceCanvas, bbox = null) {
     }
   }
 
-  // 5. Morphological operations: Close (radius 4) to bridge ajwain seeds and cracks, Open (radius 2) to drop speckles
+  // 5. Morphological operations: Close (radius 4) to bridge blisters, Open (radius 2) to drop speckles
   const closedMask = morphClose(rawMask, W, H, 4);
   const cleanedMask = morphOpen(closedMask, W, H, 2);
 
@@ -395,65 +347,11 @@ function removeBackground(sourceCanvas, bbox = null) {
   // 7. Hole filling: flood fill background from outer perimeter, invert to make samosa solid
   const solidMask = fillMaskHoles(filteredMask, W, H);
 
-  // 8. Generate transparent isolated samosa canvas
-  const isolatedCanvas = document.createElement('canvas');
-  isolatedCanvas.width = W;
-  isolatedCanvas.height = H;
-  const ictx = isolatedCanvas.getContext('2d');
-  const isolatedImgData = ictx.createImageData(W, H);
-  const idata = isolatedImgData.data;
-
-  // Soft edge / feathered alpha
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const idx = (y * W + x) * 4;
-      const maskVal = solidMask[y * W + x];
-      if (maskVal > 0) {
-        idata[idx] = data[idx];
-        idata[idx + 1] = data[idx + 1];
-        idata[idx + 2] = data[idx + 2];
-        idata[idx + 3] = 255;
-      } else {
-        idata[idx] = 0;
-        idata[idx + 1] = 0;
-        idata[idx + 2] = 0;
-        idata[idx + 3] = 0;
-      }
-    }
-  }
-  ictx.putImageData(isolatedImgData, 0, 0);
-
-  // 9. Generate Mask Canvas (Neon Cyan on dark)
-  const maskCanvas = document.createElement('canvas');
-  maskCanvas.width = W;
-  maskCanvas.height = H;
-  const mctx = maskCanvas.getContext('2d');
-  const maskImgData = mctx.createImageData(W, H);
-  const mdata = maskImgData.data;
-
-  for (let i = 0; i < W * H; i++) {
-    const idx = i * 4;
-    if (solidMask[i] > 0) {
-      mdata[idx] = 0;
-      mdata[idx + 1] = 212;
-      mdata[idx + 2] = 255;
-      mdata[idx + 3] = 220;
-    } else {
-      mdata[idx] = 12;
-      mdata[idx + 1] = 12;
-      mdata[idx + 2] = 20;
-      mdata[idx + 3] = 255;
-    }
-  }
-  mctx.putImageData(maskImgData, 0, 0);
-
-  // 10. Extract outer boundary points and Convex Hull
+  // 8. Extract boundary contour points and Convex Hull
   const boundaryPts = extractBoundaryPoints(solidMask, W, H);
   const hullPts = boundaryPts.length >= 3 ? convexHull(boundaryPts) : null;
 
   return {
-    isolatedCanvas: isolatedCanvas,
-    maskCanvas: maskCanvas,
     mask: solidMask,
     boundaryPts: boundaryPts,
     hullPts: hullPts,
@@ -467,7 +365,6 @@ function extractPrimaryComponent(mask, W, H) {
   const labels = new Int32Array(W * H);
   let currentLabel = 1;
   const blobStats = [];
-
   const queue = [];
 
   for (let y = 0; y < H; y++) {
@@ -493,7 +390,6 @@ function extractPrimaryComponent(mask, W, H) {
             touchesBorder = true;
           }
 
-          // 4-neighbors
           const neighbors = [
             [qx + 1, qy],
             [qx - 1, qy],
@@ -536,14 +432,11 @@ function extractPrimaryComponent(mask, W, H) {
     return { filteredMask: mask, primaryBlob: null };
   }
 
-  // Sort by score (area + central location)
   blobStats.sort((a, b) => b.score - a.score);
   const bestBlob = blobStats[0];
 
-  // Build binary mask of only the primary blob
   const filteredMask = new Uint8Array(W * H);
   const targetLabel = bestBlob.label;
-
   for (let i = 0; i < W * H; i++) {
     if (labels[i] === targetLabel) {
       filteredMask[i] = 255;
@@ -553,7 +446,7 @@ function extractPrimaryComponent(mask, W, H) {
   return { filteredMask: filteredMask, primaryBlob: bestBlob };
 }
 
-/** Fills any internal holes in the mask using flood fill from image perimeter */
+/** Fills internal holes in mask using flood fill from boundary */
 function fillMaskHoles(mask, W, H) {
   const inverted = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) {
@@ -563,7 +456,6 @@ function fillMaskHoles(mask, W, H) {
   const reached = new Uint8Array(W * H);
   const queue = [];
 
-  // Seed boundary pixels
   for (let x = 0; x < W; x++) {
     if (inverted[x] === 1 && !reached[x]) { reached[x] = 1; queue.push(x, 0); }
     const bIdx = (H - 1) * W + x;
@@ -599,18 +491,15 @@ function fillMaskHoles(mask, W, H) {
     }
   }
 
-  // Any pixel not reached from the borders is an interior hole! Fill it!
   const filled = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) {
     if (reached[i] === 0) {
       filled[i] = 255;
     }
   }
-
   return filled;
 }
 
-/** Extracts boundary contour points of solid mask */
 function extractBoundaryPoints(mask, W, H) {
   const pts = [];
   for (let y = 1; y < H - 1; y++) {
@@ -631,12 +520,10 @@ function extractBoundaryPoints(mask, W, H) {
   return pts;
 }
 
-/** Morphological Close (Dilation followed by Erosion) */
 function morphClose(src, w, h, radius = 3) {
   return morphErode(morphDilate(src, w, h, radius), w, h, radius);
 }
 
-/** Morphological Open (Erosion followed by Dilation) */
 function morphOpen(src, w, h, radius = 2) {
   return morphDilate(morphErode(src, w, h, radius), w, h, radius);
 }
@@ -683,7 +570,6 @@ function morphErode(src, w, h, radius = 2) {
   return dst;
 }
 
-/** Convex Hull via Monotone Chain Algorithm */
 function convexHull(pts) {
   if (pts.length <= 3) return pts.slice();
   const sorted = pts.slice().sort((a, b) => (a.x !== b.x ? a.x - b.x : a.y - b.y));
@@ -718,44 +604,31 @@ function convexHull(pts) {
 
 /**
  * Detects the 3 outer corners (Apex, Bottom-Left, Bottom-Right) on the clean samosa hull.
- * Matches infographic:
- *   • Apex: Top tip (Red circle)
- *   • Bottom-Left: Left base corner (Green circle)
- *   • Bottom-Right: Right base corner (Blue circle)
+ * Returns null if no authentic 3-corner structure exists (e.g. non-samosa images).
  */
 function detectCornersFromSamosa(hullPts, W, H) {
-  if (!hullPts || hullPts.length < 3) {
-    return [
-      { x: W * 0.5, y: H * 0.18 },
-      { x: W * 0.2, y: H * 0.82 },
-      { x: W * 0.8, y: H * 0.82 }
-    ];
+  if (!hullPts || hullPts.length < 5) {
+    return null;
   }
 
   const n = hullPts.length;
 
-  // 1. Find the centroid of the hull
   let cx = 0, cy = 0;
   for (const p of hullPts) { cx += p.x; cy += p.y; }
   cx /= n; cy /= n;
 
-  // 2. Identify candidate corners:
-  // Apex: minimum Y (uppermost tip)
   let bestApex = hullPts[0];
   let minApexY = Infinity;
 
-  // Bottom-Left: corner maximizing (-x + y)
   let bestBL = hullPts[0];
   let maxBLScore = -Infinity;
 
-  // Bottom-Right: corner maximizing (x + y)
   let bestBR = hullPts[0];
   let maxBRScore = -Infinity;
 
   for (let i = 0; i < n; i++) {
     const p = hullPts[i];
 
-    // Local exterior turn sharpness along the hull
     const prev = hullPts[(i - 2 + n) % n];
     const next = hullPts[(i + 2) % n];
     const v1 = { x: prev.x - p.x, y: prev.y - p.y };
@@ -763,23 +636,20 @@ function detectCornersFromSamosa(hullPts, W, H) {
     const len1 = Math.hypot(v1.x, v1.y) || 1;
     const len2 = Math.hypot(v2.x, v2.y) || 1;
     const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
-    const sharpness = 1.0 - dot; // range 0..2 (higher = sharper turn)
+    const sharpness = 1.0 - dot;
 
-    // Apex score (favors top Y, upward protrusion away from centroid, and sharpness)
     const apexScore = -p.y * 1.5 + (cy - p.y) * 0.5 + sharpness * 25;
     if (apexScore > -minApexY) {
       minApexY = -apexScore;
       bestApex = p;
     }
 
-    // Bottom-Left score (left of centroid, low in image, sharp)
     const blScore = -(p.x - cx) * 1.3 + (p.y - cy) * 1.1 + sharpness * 20;
     if (blScore > maxBLScore) {
       maxBLScore = blScore;
       bestBL = p;
     }
 
-    // Bottom-Right score (right of centroid, low in image, sharp)
     const brScore = (p.x - cx) * 1.3 + (p.y - cy) * 1.1 + sharpness * 20;
     if (brScore > maxBRScore) {
       maxBRScore = brScore;
@@ -787,14 +657,287 @@ function detectCornersFromSamosa(hullPts, W, H) {
     }
   }
 
-  // Refine points to snap locally onto the sharpest local vertex along the hull
   const refineRadius = Math.max(12, Math.hypot(W, H) * 0.08);
   const refinedApex = findSharpestHullPoint(bestApex, hullPts, refineRadius, 'top');
   const refinedBL   = findSharpestHullPoint(bestBL, hullPts, refineRadius, 'bottomLeft');
   const refinedBR   = findSharpestHullPoint(bestBR, hullPts, refineRadius, 'bottomRight');
 
+  if (!refinedApex || !refinedBL || !refinedBR) return null;
+  if (dist(refinedApex, refinedBL) < 15 || dist(refinedApex, refinedBR) < 15 || dist(refinedBL, refinedBR) < 15) {
+    return null;
+  }
+
   return [refinedApex, refinedBL, refinedBR];
 }
+
+/**
+ * Validates whether the image contains an actual samosa rather than an arbitrary object/background.
+ * Checks blob presence, relative area, fried pastry color profile, and corner geometry.
+ */
+/**
+ * Rigorous Samosa Validation Heuristics:
+ * Evaluates:
+ *  1. 3 distinct corner presence
+ *  2. Triangle area & non-collinearity
+ *  3. Angle distribution (resembling a samosa)
+ *  4. Aspect ratio
+ *  5. Blob presence & proportional size
+ *  6. Fried dough color profile (warm golden/amber hues)
+ *  7. Triangle vs Mask IoU (distinguishes triangles from circles/squares/rectangles)
+ *  8. Corner sharpness (detects true vertices, rejects smooth round contours)
+ *  9. Surface texture variance (rejects flat plastic, paper, and screens)
+ * 10. Polygonal approximation vertex count (Ramer-Douglas-Peucker)
+ */
+function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
+  // 1. Must have 3 distinct detected corners
+  if (!corners || corners.length !== 3 || !corners[0] || !corners[1] || !corners[2]) {
+    return {
+      isValid: false,
+      reason: 'No samosa detected: Could not find 3 distinct triangular corners.'
+    };
+  }
+
+  const [A, B, C] = corners;
+  const totalArea = W * H;
+
+  // 2. Triangle Area & Collinearity Check
+  const triAreaVal = Math.abs((B.x - A.x) * (C.y - A.y) - (C.x - A.x) * (B.y - A.y)) / 2;
+  if (triAreaVal < totalArea * 0.035) {
+    return {
+      isValid: false,
+      reason: 'No samosa detected: Shape area is too small or flat to be a samosa.'
+    };
+  }
+
+  // 3. Triangle Angle Proportions (must resemble a real triangle)
+  const angles = computeAnglesFromVertices(A, B, C);
+  const minAngle = Math.min(angles.A, angles.B, angles.C);
+  const maxAngle = Math.max(angles.A, angles.B, angles.C);
+  if (minAngle < 15 || maxAngle > 150) {
+    return {
+      isValid: false,
+      reason: 'No samosa detected: Angles do not match the shape of a triangular samosa.'
+    };
+  }
+
+  // 4. Triangle Aspect Ratio
+  const triMinX = Math.min(A.x, B.x, C.x);
+  const triMaxX = Math.max(A.x, B.x, C.x);
+  const triMinY = Math.min(A.y, B.y, C.y);
+  const triMaxY = Math.max(A.y, B.y, C.y);
+  const triWidth = triMaxX - triMinX;
+  const triHeight = triMaxY - triMinY;
+  const triAspect = triWidth / Math.max(1, triHeight);
+  if (triAspect < 0.35 || triAspect > 2.8) {
+    return {
+      isValid: false,
+      reason: 'No samosa detected: Proportions do not match a samosa.'
+    };
+  }
+
+  // 5. Segmented Pastry Blob Check
+  if (!bgRemoval || !bgRemoval.primaryBlob) {
+    return {
+      isValid: false,
+      reason: 'No samosa detected in this picture! Please upload a photo of a samosa.'
+    };
+  }
+
+  const blobArea = bgRemoval.primaryBlob.area;
+  const areaRatio = blobArea / totalArea;
+  if (areaRatio < 0.035) {
+    return {
+      isValid: false,
+      reason: 'No samosa detected: The detected pastry area is too small.'
+    };
+  }
+  if (areaRatio > 0.94) {
+    return {
+      isValid: false,
+      reason: 'No distinct samosa found: The image appears to be a uniform background.'
+    };
+  }
+
+  // 6. Color Check: Pastry pixels must match fried dough tones
+  const ctx = sourceCanvas.getContext('2d');
+  const imgData = ctx.getImageData(0, 0, W, H);
+  const data = imgData.data;
+  const mask = bgRemoval.mask;
+
+  let sampledCount = 0;
+  let pastryPixelCount = 0;
+  const sampleStep = Math.max(1, Math.floor((W * H) / 1000));
+
+  for (let idx = 0; idx < W * H; idx += sampleStep) {
+    if (mask && mask[idx] > 0) {
+      sampledCount++;
+      const pIdx = idx * 4;
+      const r = data[pIdx], g = data[pIdx + 1], b = data[pIdx + 2];
+      const hsv = rgbToHsv(r, g, b);
+
+      const isPastryHue = (hsv.h >= 10 && hsv.h <= 65);
+      const isWarm = (r > b + 10) && (r > 50);
+      const isNotBlue = (b < r * 0.95);
+
+      if (isPastryHue && isWarm && isNotBlue) {
+        pastryPixelCount++;
+      }
+    }
+  }
+
+  if (sampledCount > 15) {
+    const pastryRatio = pastryPixelCount / sampledCount;
+    if (pastryRatio < 0.35) {
+      return {
+        isValid: false,
+        reason: 'No samosa detected: Object color and texture do not match fried pastry.'
+      };
+    }
+  }
+
+  // 7. Triangle vs Silhouette IoU (Shape Matching)
+  // Rejects circles, rectangles, and amorphous shapes where a triangle doesn't actually fit
+  const triMask = rasterizeTriangle(A, B, C, W, H);
+  let intersection = 0;
+  let union = 0;
+  let triPixelCount = 0;
+  let blobPixelCount = 0;
+
+  for (let i = 0; i < W * H; i++) {
+    const isTri = triMask[i] > 0;
+    const isBlob = mask && mask[i] > 0;
+    if (isTri) triPixelCount++;
+    if (isBlob) blobPixelCount++;
+    if (isTri && isBlob) intersection++;
+    if (isTri || isBlob) union++;
+  }
+
+  const iou = union > 0 ? (intersection / union) : 0;
+  const shapeAreaRatio = blobPixelCount > 0 ? (triPixelCount / blobPixelCount) : 0;
+
+  // A genuine samosa closely matches its enclosing triangle:
+  // IoU >= 0.54 and area ratio between 0.62 and 1.48
+  if (iou < 0.54 || shapeAreaRatio < 0.62 || shapeAreaRatio > 1.48) {
+    return {
+      isValid: false,
+      reason: 'No samosa detected: Object shape is not triangular.'
+    };
+  }
+
+  // 8. Corner Sharpness Check
+  // Ensures corners are actual physical vertices and not points along a continuous curve (like a plate/circle)
+  const hull = bgRemoval.hullPts;
+  if (hull && hull.length >= 6) {
+    const n = hull.length;
+    const checkStep = Math.max(2, Math.floor(n / 14));
+    let sharpCornerCount = 0;
+
+    for (const c of [A, B, C]) {
+      let closestIdx = 0;
+      let minDist = Infinity;
+      for (let i = 0; i < n; i++) {
+        const d = dist(c, hull[i]);
+        if (d < minDist) { minDist = d; closestIdx = i; }
+      }
+
+      const prev = hull[(closestIdx - checkStep + n) % n];
+      const next = hull[(closestIdx + checkStep) % n];
+      const v1 = { x: prev.x - c.x, y: prev.y - c.y };
+      const v2 = { x: next.x - c.x, y: next.y - c.y };
+      const len1 = Math.hypot(v1.x, v1.y) || 1;
+      const len2 = Math.hypot(v2.x, v2.y) || 1;
+      const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
+      const curvature = 1.0 - dot;
+
+      if (curvature > 0.22) {
+        sharpCornerCount++;
+      }
+    }
+
+    if (sharpCornerCount < 2) {
+      return {
+        isValid: false,
+        reason: 'No samosa detected: Object is rounded without triangular corners.'
+      };
+    }
+
+    // 9. Polygonal Approximation Check (Ramer-Douglas-Peucker)
+    let perim = 0;
+    for (let i = 0; i < n; i++) perim += dist(hull[i], hull[(i + 1) % n]);
+    const closedHull = hull.concat([hull[0]]);
+    const simplified = ramerDouglasPeucker(closedHull, perim * 0.045);
+    const approxVertices = simplified.length - 1;
+
+    // A triangle simplifies to 3 or 4 vertices; circles & complex polygons simplify to 6+
+    if (approxVertices >= 7) {
+      return {
+        isValid: false,
+        reason: 'No samosa detected: Contour geometry is multi-sided or circular.'
+      };
+    }
+  }
+
+  // 10. Surface Texture Variance Check
+  // Fried dough has frying blisters and color gradients; flat artificial surfaces (paper, desk) have near-zero variance
+  let sumLum = 0, sumLumSq = 0, lumCount = 0;
+  const lumStep = Math.max(1, Math.floor((W * H) / 1200));
+  for (let idx = 0; idx < W * H; idx += lumStep) {
+    if (mask && mask[idx] > 0) {
+      const pIdx = idx * 4;
+      const lum = 0.299 * data[pIdx] + 0.587 * data[pIdx + 1] + 0.114 * data[pIdx + 2];
+      sumLum += lum;
+      sumLumSq += lum * lum;
+      lumCount++;
+    }
+  }
+  if (lumCount > 25) {
+    const mean = sumLum / lumCount;
+    const variance = (sumLumSq / lumCount) - (mean * mean);
+    const stdDev = Math.sqrt(Math.max(0, variance));
+    if (stdDev < 10) {
+      return {
+        isValid: false,
+        reason: 'No samosa detected: Surface texture is uniform and does not match fried pastry.'
+      };
+    }
+  }
+
+  return { isValid: true };
+}
+
+/** Ramer-Douglas-Peucker polygonal curve simplification */
+function ramerDouglasPeucker(pts, epsilon) {
+  if (pts.length <= 2) return pts;
+
+  let dmax = 0;
+  let index = 0;
+  const end = pts.length - 1;
+
+  for (let i = 1; i < end; i++) {
+    const d = perpendicularDist(pts[i], pts[0], pts[end]);
+    if (d > dmax) {
+      index = i;
+      dmax = d;
+    }
+  }
+
+  if (dmax > epsilon) {
+    const rec1 = ramerDouglasPeucker(pts.slice(0, index + 1), epsilon);
+    const rec2 = ramerDouglasPeucker(pts.slice(index), epsilon);
+    return rec1.slice(0, rec1.length - 1).concat(rec2);
+  } else {
+    return [pts[0], pts[end]];
+  }
+}
+
+function perpendicularDist(pt, l1, l2) {
+  const dx = l2.x - l1.x;
+  const dy = l2.y - l1.y;
+  const mag = Math.hypot(dx, dy);
+  if (mag === 0) return Math.hypot(pt.x - l1.x, pt.y - l1.y);
+  return Math.abs(dy * pt.x - dx * pt.y + l2.x * l1.y - l2.y * l1.x) / mag;
+}
+
 
 function findSharpestHullPoint(targetPt, hullPts, maxRadius, role) {
   let bestPt = targetPt;
@@ -839,28 +982,32 @@ async function callGeminiVision(canvas) {
   if (!STATE.apiKey) throw new Error('NO_API_KEY');
 
   const base64Data = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-  const prompt = `You are a computer vision model for samosa detection.
-Your task is to detect the main samosa in the image and locate its bounding box and 3 physical corners.
-DO NOT guess or calculate angles or accuracy scores. ONLY return coordinates.
-
-Exclusion Rules:
-- Exclude the background, plates, table, and hands holding the samosa.
-- The corners must be the 3 outer corners of the actual samosa pastry:
+  const prompt = `You are an expert computer vision model for samosa detection.
+First, check if the image contains a samosa.
+- If NO samosa is present (e.g. it is a picture of a person, animal, vehicle, scenery, text, or other food like pizza/burger):
+  Return strictly JSON:
+  {
+    "hasSamosa": false,
+    "confidence": 0.0,
+    "reason": "No samosa detected in this picture."
+  }
+- If a samosa IS present:
+  Locate the main samosa, its bounding box, and the 3 physical corners of the fried pastry:
   "apex": The top tip/peak of the samosa.
   "bottomLeft": The bottom-left corner.
   "bottomRight": The bottom-right corner.
-
-Return strictly JSON:
-{
-  "hasSamosa": true,
-  "confidence": 0.94,
-  "boundingBox": { "ymin": 100, "xmin": 150, "ymax": 900, "xmax": 850 },
-  "corners": {
-    "apex": { "x": 500, "y": 120 },
-    "bottomLeft": { "x": 200, "y": 850 },
-    "bottomRight": { "x": 800, "y": 830 }
-  }
-}`;
+  Exclude background, plate, table, and holding fingers.
+  Return strictly JSON:
+  {
+    "hasSamosa": true,
+    "confidence": 0.94,
+    "boundingBox": { "ymin": 100, "xmin": 150, "ymax": 900, "xmax": 850 },
+    "corners": {
+      "apex": { "x": 500, "y": 120 },
+      "bottomLeft": { "x": 200, "y": 850 },
+      "bottomRight": { "x": 800, "y": 830 }
+    }
+  }`;
 
   const requestBody = {
     contents: [
@@ -900,8 +1047,11 @@ Return strictly JSON:
 
       const cleanJson = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
       const result = JSON.parse(cleanJson);
-      if (!result.hasSamosa || !result.corners) {
-        throw new Error('No samosa recognized by the AI in this image.');
+      if (result.hasSamosa === false) {
+        return { hasSamosa: false, reason: result.reason || 'AI did not recognize any samosa in this image.' };
+      }
+      if (!result.corners) {
+        throw new Error('Incomplete corner detection from AI.');
       }
       return result;
     } catch (err) {
@@ -913,53 +1063,21 @@ Return strictly JSON:
 }
 
 /* ═══════════════════════════════════════════════════════
-   6. OVERLAY RENDERING & 4-STEP PIPELINE PREVIEW
+   6. OVERLAY RENDERING (ON ORIGINAL PHOTO WITH BACKGROUND)
    ═══════════════════════════════════════════════════════ */
 
 /**
- * Renders the analyzed image based on the selected View Mode and Pipeline Stage:
- *
- * View Modes:
- *  • 'nobg' (default): Samosa isolated on checkerboard background (matches infographic)
- *  • 'original': Original photograph with overlay
- *  • 'mask': Segmentation mask view
- *
- * Pipeline Stages:
- *  • Stage 1: Original Image
- *  • Stage 2: Background Removal (Clean isolated samosa on checkerboard)
- *  • Stage 3: Corner Detection (Apex in Red, BL in Green, BR in Blue, Contour)
- *  • Stage 4: Measurement & Accuracy (Triangle + angles + side lengths + score)
+ * Draws the detected triangle, corners, and measurements directly ON TOP OF THE ORIGINAL PHOTO.
+ * (Background removal is completed in the backend to ensure clean corner detection).
  */
-function renderOverlay(canvas, result, viewMode = 'nobg', stage = 4, showDebug = false) {
+function renderOverlay(canvas, result, showDebug = false) {
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
 
   ctx.clearRect(0, 0, W, H);
 
-  // 1. Draw base layer
-  if (stage === 1 || viewMode === 'original') {
-    // Draw original raw photo
-    ctx.drawImage(STATE.rawImage, 0, 0, W, H);
-  } else if (viewMode === 'mask') {
-    // Draw segmentation mask
-    if (result.maskCanvas) {
-      ctx.drawImage(result.maskCanvas, 0, 0, W, H);
-    } else {
-      ctx.drawImage(STATE.rawImage, 0, 0, W, H);
-    }
-  } else {
-    // 'nobg' mode: Draw subtle checkerboard + isolated transparent samosa
-    drawCheckerboard(ctx, W, H);
-    if (result.isolatedCanvas) {
-      ctx.drawImage(result.isolatedCanvas, 0, 0, W, H);
-    } else {
-      ctx.drawImage(STATE.rawImage, 0, 0, W, H);
-    }
-  }
-
-  // If stage 1 or stage 2, stop here (clean preview of step 1 or step 2)
-  if (stage === 1) return;
-  if (stage === 2) return;
+  // 1. Draw base layer: The original photo with its background!
+  ctx.drawImage(STATE.rawImage, 0, 0, W, H);
 
   const [A, B, C] = result.refinedCorners;
   const geom = result.geometry;
@@ -978,119 +1096,79 @@ function renderOverlay(canvas, result, viewMode = 'nobg', stage = 4, showDebug =
       ctx.fillText('SAMOSA BOUNDS', result.bbox.xmin + 6, result.bbox.ymin + 14);
       ctx.restore();
     }
-    if (result.rawAiCorners) {
-      result.rawAiCorners.forEach((pt, i) => {
-        ctx.save();
-        ctx.strokeStyle = '#ff00ea';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 8, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
-      });
+    if (result.hullPts && result.hullPts.length > 2) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(0, 212, 255, 0.65)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(result.hullPts[0].x, result.hullPts[0].y);
+      for (let i = 1; i < result.hullPts.length; i++) {
+        ctx.lineTo(result.hullPts[i].x, result.hullPts[i].y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
-  // 3. Draw Samosa Outer Contour
-  if (result.hullPts && result.hullPts.length > 2) {
-    ctx.save();
-    ctx.strokeStyle = 'rgba(0, 212, 255, 0.65)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(result.hullPts[0].x, result.hullPts[0].y);
-    for (let i = 1; i < result.hullPts.length; i++) {
-      ctx.lineTo(result.hullPts[i].x, result.hullPts[i].y);
-    }
-    ctx.closePath();
-    ctx.stroke();
-    ctx.restore();
-  }
+  // 3. Draw Best-Fit Triangle
+  ctx.save();
+  ctx.fillStyle = 'rgba(57, 217, 138, 0.16)';
+  ctx.beginPath();
+  ctx.moveTo(A.x, A.y);
+  ctx.lineTo(B.x, B.y);
+  ctx.lineTo(C.x, C.y);
+  ctx.closePath();
+  ctx.fill();
 
-  // 4. In Stage 3 (Corner Detection): Draw corners & connecting edges
-  if (stage >= 3) {
-    // Triangle fill & edges
+  // Vibrant Green triangle perimeter
+  ctx.strokeStyle = '#39d98a';
+  ctx.lineWidth = 3.5;
+  ctx.shadowColor = '#39d98a';
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.moveTo(A.x, A.y);
+  ctx.lineTo(B.x, B.y);
+  ctx.lineTo(C.x, C.y);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+
+  // 4. Draw side length badges along edges
+  drawSideBadge(ctx, A, B, `c: ${Math.round(geom.sideLengths.AB)}px`);
+  drawSideBadge(ctx, B, C, `a: ${Math.round(geom.sideLengths.BC)}px`);
+  drawSideBadge(ctx, C, A, `b: ${Math.round(geom.sideLengths.CA)}px`);
+
+  // 5. Draw angle arcs at each corner
+  drawAngleArc(ctx, A, B, C, '#ff3b30');
+  drawAngleArc(ctx, B, A, C, '#34c759');
+  drawAngleArc(ctx, C, A, B, '#007aff');
+
+  // 6. Draw vertices: Apex (Red), Bottom-Left (Green), Bottom-Right (Blue)
+  const vertices = [
+    { pt: A, name: 'A', role: 'Apex', angle: angles.A, color: '#ff3b30' },
+    { pt: B, name: 'B', role: 'BL',   angle: angles.B, color: '#34c759' },
+    { pt: C, name: 'C', role: 'BR',   angle: angles.C, color: '#007aff' }
+  ];
+
+  vertices.forEach(v => {
     ctx.save();
-    ctx.fillStyle = 'rgba(57, 217, 138, 0.14)';
+    ctx.fillStyle = v.color;
+    ctx.shadowColor = v.color;
+    ctx.shadowBlur = 12;
     ctx.beginPath();
-    ctx.moveTo(A.x, A.y);
-    ctx.lineTo(B.x, B.y);
-    ctx.lineTo(C.x, C.y);
-    ctx.closePath();
+    ctx.arc(v.pt.x, v.pt.y, 7.5, 0, Math.PI * 2);
     ctx.fill();
 
-    // Vibrant Green triangle boundary (matches infographic)
-    ctx.strokeStyle = '#39d98a';
-    ctx.lineWidth = 3.5;
-    ctx.shadowColor = '#39d98a';
-    ctx.shadowBlur = 10;
+    ctx.fillStyle = '#ffffff';
     ctx.beginPath();
-    ctx.moveTo(A.x, A.y);
-    ctx.lineTo(B.x, B.y);
-    ctx.lineTo(C.x, C.y);
-    ctx.closePath();
-    ctx.stroke();
+    ctx.arc(v.pt.x, v.pt.y, 3, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
 
-    // Side lengths badges along edges (Stage 4)
-    if (stage === 4) {
-      drawSideBadge(ctx, A, B, `c: ${Math.round(geom.sideLengths.AB)}px`);
-      drawSideBadge(ctx, B, C, `a: ${Math.round(geom.sideLengths.BC)}px`);
-      drawSideBadge(ctx, C, A, `b: ${Math.round(geom.sideLengths.CA)}px`);
-
-      // Draw angle arcs at each corner
-      drawAngleArc(ctx, A, B, C, '#ff3b30');
-      drawAngleArc(ctx, B, A, C, '#34c759');
-      drawAngleArc(ctx, C, A, B, '#007aff');
-    }
-
-    // Vertices: Exact infographic colors
-    // Apex = Red, Bottom-Left = Green, Bottom-Right = Blue
-    const vertices = [
-      { pt: A, name: 'A', role: 'Apex', angle: angles.A, color: '#ff3b30' },
-      { pt: B, name: 'B', role: 'BL',   angle: angles.B, color: '#34c759' },
-      { pt: C, name: 'C', role: 'BR',   angle: angles.C, color: '#007aff' }
-    ];
-
-    vertices.forEach(v => {
-      // Glow circle
-      ctx.save();
-      ctx.fillStyle = v.color;
-      ctx.shadowColor = v.color;
-      ctx.shadowBlur = 12;
-      ctx.beginPath();
-      ctx.arc(v.pt.x, v.pt.y, 7.5, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Inner white center
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.arc(v.pt.x, v.pt.y, 3, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-
-      // Angle label pill (Stage 4)
-      if (stage === 4) {
-        drawAnglePill(ctx, v.pt.x, v.pt.y, `${v.name}: ~${v.angle.toFixed(1)}°`, v.color);
-      }
-    });
-  }
-}
-
-/** Draws subtle transparency checkerboard pattern */
-function drawCheckerboard(ctx, w, h, size = 16) {
-  ctx.save();
-  ctx.fillStyle = '#0c0c16';
-  ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = '#151522';
-  for (let y = 0; y < h; y += size) {
-    for (let x = 0; x < w; x += size) {
-      if (((x / size) + (y / size)) % 2 === 0) {
-        ctx.fillRect(x, y, size, size);
-      }
-    }
-  }
-  ctx.restore();
+    drawAnglePill(ctx, v.pt.x, v.pt.y, `${v.name}: ~${v.angle.toFixed(1)}°`, v.color);
+  });
 }
 
 /** Draws angle arc indicator between two rays at vertex V */
@@ -1211,7 +1289,6 @@ function renderMeasurements(geom) {
     </div>
   `;
 
-  // Formula Breakdown Details (live calculation)
   const formulaDetails = document.getElementById('formula-details');
   if (formulaDetails && f) {
     formulaDetails.innerHTML = `
@@ -1221,7 +1298,6 @@ function renderMeasurements(geom) {
     `;
   }
 
-  // Vertices Table with colored dots
   const tbody = document.getElementById('vertices-body');
   tbody.innerHTML = `
     <tr>
@@ -1303,13 +1379,13 @@ function updateDetectionBadge(modeType) {
   badge.className = 'detection-badge';
   if (modeType === 'ai') {
     badge.classList.add('badge-ai');
-    badge.textContent = '🤖 AI + BG Removal';
+    badge.textContent = '🤖 AI + Auto BG Removal';
   } else if (modeType === 'precision') {
     badge.classList.add('badge-precision');
     badge.textContent = '✋ Precision Mode';
   } else {
     badge.classList.add('badge-cv');
-    badge.textContent = '✂️ CV BG Removal';
+    badge.textContent = '⚡ Pure CV + Auto BG Removal';
   }
 }
 
@@ -1323,7 +1399,7 @@ async function startAnalysis(img) {
   resetSteps();
 
   try {
-    // Step 1: Read and scale image
+    // Step 1: Read & scale image
     activateStep(0);
     await sleep(40);
 
@@ -1351,7 +1427,7 @@ async function startAnalysis(img) {
       return;
     }
 
-    // Step 2: Background Removal
+    // Step 2: Background Removal (Silent backend isolation)
     activateStep(1);
     await sleep(40);
 
@@ -1361,7 +1437,11 @@ async function startAnalysis(img) {
     if (STATE.apiKey) {
       try {
         aiResult = await callGeminiVision(procCanvas);
-        if (aiResult.boundingBox) {
+        if (aiResult && aiResult.hasSamosa === false) {
+          showError(aiResult.reason || 'No samosa detected in this picture! Please upload an image containing a samosa.');
+          return;
+        }
+        if (aiResult && aiResult.boundingBox) {
           aiBbox = {
             xmin: Math.max(0, Math.floor((aiResult.boundingBox.xmin / 1000) * targetW)),
             ymin: Math.max(0, Math.floor((aiResult.boundingBox.ymin / 1000) * targetH)),
@@ -1374,10 +1454,10 @@ async function startAnalysis(img) {
       }
     }
 
-    // Segment & Remove Background (HSV + Border Color Modeling + Connected Component)
+    // Isolate samosa from background
     const bgRemoval = removeBackground(procCanvas, aiBbox);
 
-    // Step 3: Corner Detection
+    // Step 3: Corner Detection (from isolated samosa contour)
     activateStep(2);
     await sleep(40);
 
@@ -1390,7 +1470,6 @@ async function startAnalysis(img) {
       const rawBR   = { x: (aiResult.corners.bottomRight.x / 1000) * targetW, y: (aiResult.corners.bottomRight.y / 1000) * targetH };
       rawAiCorners = [rawApex, rawBL, rawBR];
 
-      // Refine AI corners using the isolated samosa silhouette
       if (bgRemoval.hullPts && bgRemoval.hullPts.length >= 3) {
         const rad = Math.max(16, targetW * 0.12);
         corners = [
@@ -1402,8 +1481,14 @@ async function startAnalysis(img) {
         corners = rawAiCorners;
       }
     } else {
-      // Autonomous pure-CV corner detection on isolated samosa silhouette
       corners = detectCornersFromSamosa(bgRemoval.hullPts, targetW, targetH);
+    }
+
+    // Validate that a genuine samosa was found before calculating scores or drawing triangles
+    const samosaValidation = validateSamosa(procCanvas, bgRemoval, corners, targetW, targetH);
+    if (!samosaValidation.isValid) {
+      showError(samosaValidation.reason);
+      return;
     }
 
     // Step 4: Mathematical Calculation & Scoring
@@ -1418,21 +1503,15 @@ async function startAnalysis(img) {
       hullPts: bgRemoval.hullPts,
       mask: bgRemoval.mask,
       bbox: aiBbox,
-      isolatedCanvas: bgRemoval.isolatedCanvas,
-      maskCanvas: bgRemoval.maskCanvas,
       geometry: geom,
       confidence: aiResult?.confidence ?? (bgRemoval.hasCleanSegmentation ? 0.92 : 0.65),
       modeType: aiResult ? 'ai' : 'cv'
     };
 
     STATE.lastResult = analysisResult;
-    STATE.pipelineStage = 4; // default to final accuracy stage
-    STATE.viewMode = 'nobg';  // default to isolated samosa view
 
-    updateViewButtonsUI();
-    updatePipelineStepperUI(4);
-
-    renderOverlay(resultCanvas, analysisResult, STATE.viewMode, STATE.pipelineStage, STATE.debugMode);
+    // Render directly on original photo with background!
+    renderOverlay(resultCanvas, analysisResult, STATE.debugMode);
     renderScore(geom.accuracyScore);
     renderMeasurements(geom);
     updateConfidenceUI(analysisResult.confidence, analysisResult.modeType === 'ai');
@@ -1529,30 +1608,112 @@ function calculatePrecisionResult() {
     hullPts: [A, B, C],
     bbox: null,
     mask: null,
-    isolatedCanvas: null,
-    maskCanvas: null,
     geometry: geom,
     confidence: 1.0,
     modeType: 'precision'
   };
 
   STATE.lastResult = analysisResult;
-  renderOverlay(canvas, analysisResult, 'original', 4, STATE.debugMode);
+  renderOverlay(canvas, analysisResult, STATE.debugMode);
   renderScore(geom.accuracyScore);
   renderMeasurements(geom);
   updateDetectionBadge('precision');
 }
 
 /* ═══════════════════════════════════════════════════════
-   10. DOM WIRING & EVENT HANDLERS
+   10. LIVE WEBCAM VIEWFINDER
+   ═══════════════════════════════════════════════════════ */
+
+const cameraModal      = document.getElementById('camera-modal');
+const cameraVideo      = document.getElementById('camera-video');
+const cameraCloseBtn   = document.getElementById('camera-close-btn');
+const cameraCancelBtn  = document.getElementById('camera-cancel-btn');
+const cameraSwitchBtn  = document.getElementById('camera-switch-btn');
+const cameraShutterBtn = document.getElementById('camera-shutter-btn');
+
+let cameraStream = null;
+let currentFacingMode = 'environment';
+
+async function openLiveCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showError('Live camera is not supported by your browser or connection.');
+    return;
+  }
+
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: currentFacingMode,
+        width: { ideal: 1280 },
+        height: { ideal: 960 }
+      },
+      audio: false
+    });
+
+    cameraVideo.srcObject = cameraStream;
+    cameraModal.classList.remove('hidden');
+    await cameraVideo.play();
+  } catch (err) {
+    console.warn('Camera with constraints failed, trying basic stream:', err);
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      cameraVideo.srcObject = cameraStream;
+      cameraModal.classList.remove('hidden');
+      await cameraVideo.play();
+    } catch (fallbackErr) {
+      showError('Could not access camera: ' + (fallbackErr.message || 'Permission denied.'));
+    }
+  }
+}
+
+function closeLiveCamera() {
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(track => track.stop());
+    cameraStream = null;
+  }
+  cameraModal.classList.add('hidden');
+}
+
+async function flipCamera() {
+  currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(track => track.stop());
+    cameraStream = null;
+  }
+  await openLiveCamera();
+}
+
+function captureCameraPhoto() {
+  if (!cameraVideo || !cameraStream) return;
+
+  const snapCanvas = document.createElement('canvas');
+  snapCanvas.width = cameraVideo.videoWidth || 640;
+  snapCanvas.height = cameraVideo.videoHeight || 480;
+  const sctx = snapCanvas.getContext('2d');
+
+  if (currentFacingMode === 'user') {
+    sctx.translate(snapCanvas.width, 0);
+    sctx.scale(-1, 1);
+  }
+  sctx.drawImage(cameraVideo, 0, 0, snapCanvas.width, snapCanvas.height);
+
+  const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.92);
+  closeLiveCamera();
+
+  const img = new Image();
+  img.onload = () => startAnalysis(img);
+  img.onerror = () => showError('Failed to process captured camera image.');
+  img.src = dataUrl;
+}
+
+/* ═══════════════════════════════════════════════════════
+   11. DOM WIRING & EVENT HANDLERS
    ═══════════════════════════════════════════════════════ */
 
 // Elements
 const uploadZone     = document.getElementById('upload-zone');
 const fileInput      = document.getElementById('file-input');
 const cameraBtn      = document.getElementById('camera-btn');
-const cameraInput    = document.getElementById('camera-input');
-const sampleBtn      = document.getElementById('sample-btn');
 const uploadSection  = document.getElementById('upload-section');
 const loadingSection = document.getElementById('loading-section');
 const resultsSection = document.getElementById('results-section');
@@ -1579,11 +1740,6 @@ const modeAiBtn        = document.getElementById('mode-ai');
 const modePrecisionBtn = document.getElementById('mode-precision');
 const switchPrecBtn    = document.getElementById('switch-precision-btn');
 const debugToggle      = document.getElementById('debug-toggle');
-
-// View Switcher Buttons
-const viewNobgBtn     = document.getElementById('view-nobg-btn');
-const viewOriginalBtn = document.getElementById('view-original-btn');
-const viewMaskBtn     = document.getElementById('view-mask-btn');
 
 // Precision Mode Canvas Overlay
 const precisionOverlay = document.getElementById('precision-overlay');
@@ -1673,73 +1829,11 @@ function setMode(newMode) {
   }
 }
 
-// View Mode Switching Handlers (No BG, Original, Mask)
-viewNobgBtn.addEventListener('click', () => setViewMode('nobg'));
-viewOriginalBtn.addEventListener('click', () => setViewMode('original'));
-viewMaskBtn.addEventListener('click', () => setViewMode('mask'));
-
-function setViewMode(mode) {
-  STATE.viewMode = mode;
-  updateViewButtonsUI();
-  if (STATE.lastResult && STATE.rawImage) {
-    const canvas = document.getElementById('result-canvas');
-    renderOverlay(canvas, STATE.lastResult, STATE.viewMode, STATE.pipelineStage, STATE.debugMode);
-  }
-}
-
-function updateViewButtonsUI() {
-  [
-    { btn: viewNobgBtn, mode: 'nobg' },
-    { btn: viewOriginalBtn, mode: 'original' },
-    { btn: viewMaskBtn, mode: 'mask' }
-  ].forEach(({ btn, mode }) => {
-    if (STATE.viewMode === mode) {
-      btn.classList.add('active');
-      btn.setAttribute('aria-selected', 'true');
-    } else {
-      btn.classList.remove('active');
-      btn.setAttribute('aria-selected', 'false');
-    }
-  });
-
-  const canvasWrap = document.getElementById('canvas-wrap');
-  if (STATE.viewMode === 'nobg') {
-    canvasWrap.classList.add('checkerboard-bg');
-  } else {
-    canvasWrap.classList.remove('checkerboard-bg');
-  }
-}
-
-// Pipeline Stepper Handlers (Steps 1, 2, 3, 4 preview)
-[1, 2, 3, 4].forEach(stageNum => {
-  const card = document.getElementById(`step-card-${stageNum}`);
-  if (card) {
-    card.addEventListener('click', () => {
-      STATE.pipelineStage = stageNum;
-      updatePipelineStepperUI(stageNum);
-      if (STATE.lastResult && STATE.rawImage) {
-        const canvas = document.getElementById('result-canvas');
-        renderOverlay(canvas, STATE.lastResult, STATE.viewMode, STATE.pipelineStage, STATE.debugMode);
-      }
-    });
-  }
-});
-
-function updatePipelineStepperUI(activeStage) {
-  [1, 2, 3, 4].forEach(num => {
-    const card = document.getElementById(`step-card-${num}`);
-    if (card) {
-      if (num === activeStage) card.classList.add('active');
-      else card.classList.remove('active');
-    }
-  });
-}
-
 // Debug Mode Toggle
 debugToggle.addEventListener('change', (e) => {
   STATE.debugMode = e.target.checked;
   if (STATE.lastResult && STATE.rawImage) {
-    renderOverlay(document.getElementById('result-canvas'), STATE.lastResult, STATE.viewMode, STATE.pipelineStage, STATE.debugMode);
+    renderOverlay(document.getElementById('result-canvas'), STATE.lastResult, STATE.debugMode);
   }
 });
 
@@ -1772,6 +1866,13 @@ precisionUndoBtn.addEventListener('click', () => {
 
 precisionCalcBtn.addEventListener('click', calculatePrecisionResult);
 
+// Live Camera Modal Events
+cameraBtn.addEventListener('click', openLiveCamera);
+cameraCloseBtn.addEventListener('click', closeLiveCamera);
+cameraCancelBtn.addEventListener('click', closeLiveCamera);
+cameraSwitchBtn.addEventListener('click', flipCamera);
+cameraShutterBtn.addEventListener('click', captureCameraPhoto);
+
 // File Upload & Drag-and-Drop
 uploadZone.addEventListener('click', () => fileInput.click());
 uploadZone.addEventListener('keydown', e => {
@@ -1781,31 +1882,6 @@ fileInput.addEventListener('change', e => {
   const f = e.target.files[0];
   if (f) handleFile(f);
   fileInput.value = '';
-});
-
-cameraBtn.addEventListener('click', () => cameraInput.click());
-cameraInput.addEventListener('change', e => {
-  const f = e.target.files[0];
-  if (f) handleFile(f);
-  cameraInput.value = '';
-});
-
-// Test Difficult Samosa Button (resilient for both HTTP and file://)
-sampleBtn.addEventListener('click', () => {
-  showLoading();
-  const img = new Image();
-  img.onload = () => startAnalysis(img);
-  img.onerror = async () => {
-    try {
-      const res = await fetch('test_samosa.jpg');
-      if (!res.ok) throw new Error('Could not fetch sample.');
-      const blob = await res.blob();
-      img.src = URL.createObjectURL(blob);
-    } catch (err) {
-      showError('Sample photo error: ' + err.message);
-    }
-  };
-  img.src = 'test_samosa.jpg';
 });
 
 uploadZone.addEventListener('dragover', e => {
@@ -1887,9 +1963,11 @@ function activateStep(idx) {
 function showError(msg) {
   errorMsg.textContent = msg;
   errorToast.classList.remove('hidden');
-  setTimeout(() => errorToast.classList.add('hidden'), 4500);
+  setTimeout(() => errorToast.classList.add('hidden'), 5500);
   loadingSection.classList.add('hidden');
+  resultsSection.classList.add('hidden');
   uploadSection.classList.remove('hidden');
+  resetSteps();
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
