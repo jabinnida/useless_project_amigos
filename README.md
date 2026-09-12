@@ -75,12 +75,13 @@ For generations, humanity has consumed billions of samosas with complete disrega
 ### Project Documentation
 
 #### Screenshots
-*(Add screenshots of your application in action below)*
-- **Upload & Camera Interface:** Drop a photo or launch the live camera feed with mirror and flip support.
-- **Analysis View:** Original photo with background intact, overlaid with Apex (red), Bottom-Left (green), and Bottom-Right (blue) markers, neon triangle, and angle displays.
-- **Score Breakdown:** Accuracy percentage ring, side length differences, equilateral deviation, and verdict.
+<img  src="homepage.png" />
 
----
+<img  src="predicted accuracy.png" />
+
+<img  src="precision.png" />
+
+<img  src="camera usage.png" />
 
 ### Project Demo
 
