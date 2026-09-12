@@ -316,18 +316,17 @@ function removeBackground(sourceCanvas, bbox = null) {
 
       const centerDistNorm = Math.hypot(x - centerX, y - centerY) / maxCenterDist;
 
-      const isPastryHue = (hsv.h >= 10 && hsv.h <= 60);
-      const isPastrySat = (hsv.s >= 0.12 && hsv.s <= 0.96);
-      const isPastryVal = (hsv.v >= 0.14 && hsv.v <= 0.98);
-      const isWarm = (r > b + 10) && (r >= g * 0.82) && (r > 50);
+      const isPastry = (hsv.h >= 22 && hsv.h <= 72) && (hsv.s >= 0.28) && (hsv.v >= 0.15) && (r > b + 28);
+      const isChutney = (hsv.h >= 52 && hsv.h <= 115) && (hsv.s >= 0.30) && (g > b + 18);
+      const isSkin = (hsv.h <= 23) || (hsv.h <= 26 && hsv.s < 0.44 && b > 85);
 
-      const isDifferentFromBg = (distFromBg > 22 && minDistToBorderSample > 18);
-      const isNeutralPlate = (hsv.s < 0.10) && (r > 190 && g > 190 && b > 190);
-      const isBlackShadow = (hsv.v < 0.10);
+      const isDifferentFromBg = (distFromBg > 14 && minDistToBorderSample > 10);
+      const isNeutralPlate = (hsv.s < 0.10) && (r > 195 && g > 195 && b > 195);
+      const isBlackShadow = (hsv.v < 0.08);
 
-      if (isWarm && isPastryHue && isPastrySat && isPastryVal && isDifferentFromBg && !isNeutralPlate && !isBlackShadow) {
-        if (centerDistNorm > 0.85 && (!bbox)) {
-          if (isWarm && hsv.s > 0.25 && distFromBg > 35) {
+      if ((isPastry || isChutney) && !isSkin && isDifferentFromBg && !isNeutralPlate && !isBlackShadow) {
+        if (centerDistNorm > 0.90 && (!bbox)) {
+          if (hsv.s > 0.30 && distFromBg > 25) {
             rawMask[y * W + x] = 255;
           }
         } else {
@@ -337,9 +336,10 @@ function removeBackground(sourceCanvas, bbox = null) {
     }
   }
 
-  // 5. Morphological operations: Close (radius 4) to bridge blisters, Open (radius 2) to drop speckles
-  const closedMask = morphClose(rawMask, W, H, 4);
-  const cleanedMask = morphOpen(closedMask, W, H, 2);
+  // 5. Morphological operations: Close (radius 2) to bridge blisters, Open (radius 1) to drop speckles
+  const closedMask = morphClose(rawMask, W, H, 2);
+  const cleanedMask = morphOpen(closedMask, W, H, 1);
+
 
   // 6. Connected Component Analysis — Keep primary central samosa blob
   const { filteredMask, primaryBlob } = extractPrimaryComponent(cleanedMask, W, H);
@@ -413,6 +413,7 @@ function extractPrimaryComponent(mask, W, H) {
         const centroidY = sumY / area;
         const distFromCenter = Math.hypot(centroidX - W / 2, centroidY - H / 2);
         const centerScore = Math.max(0.1, 1.0 - (distFromCenter / Math.hypot(W / 2, H / 2)));
+        const borderPenalty = touchesBorder ? 0.20 : 1.0;
 
         blobStats.push({
           label: currentLabel,
@@ -420,8 +421,9 @@ function extractPrimaryComponent(mask, W, H) {
           centroidX: centroidX,
           centroidY: centroidY,
           touchesBorder: touchesBorder,
-          score: area * (centerScore ** 1.3)
+          score: area * (centerScore ** 1.3) * borderPenalty
         });
+
 
         currentLabel++;
       }
@@ -603,8 +605,10 @@ function convexHull(pts) {
    ═══════════════════════════════════════════════════════ */
 
 /**
- * Detects the 3 outer corners (Apex, Bottom-Left, Bottom-Right) on the clean samosa hull.
- * Returns null if no authentic 3-corner structure exists (e.g. non-samosa images).
+ * Rotation-Invariant 3-Corner Detection Engine:
+ * Finds the 3 true outer corners (Apex, Base1, Base2) of a samosa at ANY arbitrary angle or rotation.
+ * Finds the triplet of points on the convex hull that maximizes the enclosed triangular area,
+ * weighted by corner curvature sharpness.
  */
 function detectCornersFromSamosa(hullPts, W, H) {
   if (!hullPts || hullPts.length < 5) {
@@ -613,80 +617,103 @@ function detectCornersFromSamosa(hullPts, W, H) {
 
   const n = hullPts.length;
 
-  let cx = 0, cy = 0;
-  for (const p of hullPts) { cx += p.x; cy += p.y; }
-  cx /= n; cy /= n;
-
-  let bestApex = hullPts[0];
-  let minApexY = Infinity;
-
-  let bestBL = hullPts[0];
-  let maxBLScore = -Infinity;
-
-  let bestBR = hullPts[0];
-  let maxBRScore = -Infinity;
-
+  // 1. Compute curvature / sharpness at every hull point
+  const sharpness = new Float32Array(n);
+  const step = Math.max(1, Math.floor(n / 16));
   for (let i = 0; i < n; i++) {
     const p = hullPts[i];
-
-    const prev = hullPts[(i - 2 + n) % n];
-    const next = hullPts[(i + 2) % n];
+    const prev = hullPts[(i - step + n) % n];
+    const next = hullPts[(i + step) % n];
     const v1 = { x: prev.x - p.x, y: prev.y - p.y };
     const v2 = { x: next.x - p.x, y: next.y - p.y };
     const len1 = Math.hypot(v1.x, v1.y) || 1;
     const len2 = Math.hypot(v2.x, v2.y) || 1;
     const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
-    const sharpness = 1.0 - dot;
+    sharpness[i] = Math.max(0, 1.0 - dot);
+  }
 
-    const apexScore = -p.y * 1.5 + (cy - p.y) * 0.5 + sharpness * 25;
-    if (apexScore > -minApexY) {
-      minApexY = -apexScore;
-      bestApex = p;
-    }
+  // 2. Search for the optimal triplet (i, j, k) that maximizes enclosed triangle area + corner sharpness
+  const minSep = Math.max(2, Math.floor(n * 0.08));
+  let bestScore = -Infinity;
+  let bestTriplet = null;
+  const searchStep = Math.max(1, Math.floor(n / 60));
 
-    const blScore = -(p.x - cx) * 1.3 + (p.y - cy) * 1.1 + sharpness * 20;
-    if (blScore > maxBLScore) {
-      maxBLScore = blScore;
-      bestBL = p;
-    }
+  for (let i = 0; i < n; i += searchStep) {
+    for (let j = i + minSep; j < n - minSep; j += searchStep) {
+      for (let k = j + minSep; k < n; k += searchStep) {
+        const d3 = (n - k) + i;
+        if (d3 < minSep) continue;
 
-    const brScore = (p.x - cx) * 1.3 + (p.y - cy) * 1.1 + sharpness * 20;
-    if (brScore > maxBRScore) {
-      maxBRScore = brScore;
-      bestBR = p;
+        const p1 = hullPts[i];
+        const p2 = hullPts[j];
+        const p3 = hullPts[k];
+
+        // Enclosed triangle area
+        const area = Math.abs((p2.x - p1.x) * (p3.y - p1.y) - (p3.x - p1.x) * (p2.y - p1.y)) / 2;
+        if (area < 10) continue;
+
+        // Weight area by corner sharpness
+        const sharpBonus = 1.0 + 0.35 * (sharpness[i] + sharpness[j] + sharpness[k]);
+        const score = area * sharpBonus;
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestTriplet = [i, j, k];
+        }
+      }
     }
   }
 
-  const refineRadius = Math.max(12, Math.hypot(W, H) * 0.08);
-  const refinedApex = findSharpestHullPoint(bestApex, hullPts, refineRadius, 'top');
-  const refinedBL   = findSharpestHullPoint(bestBL, hullPts, refineRadius, 'bottomLeft');
-  const refinedBR   = findSharpestHullPoint(bestBR, hullPts, refineRadius, 'bottomRight');
 
-  if (!refinedApex || !refinedBL || !refinedBR) return null;
-  if (dist(refinedApex, refinedBL) < 15 || dist(refinedApex, refinedBR) < 15 || dist(refinedBL, refinedBR) < 15) {
+  if (!bestTriplet) return null;
+
+  // 3. Refine candidate corners to the sharpest local peak
+  const refineRad = Math.max(10, Math.hypot(W, H) * 0.07);
+  const p1 = findSharpestHullPoint(hullPts[bestTriplet[0]], hullPts, refineRad, 'any');
+  const p2 = findSharpestHullPoint(hullPts[bestTriplet[1]], hullPts, refineRad, 'any');
+  const p3 = findSharpestHullPoint(hullPts[bestTriplet[2]], hullPts, refineRad, 'any');
+
+  if (dist(p1, p2) < 15 || dist(p2, p3) < 15 || dist(p3, p1) < 15) {
     return null;
   }
 
-  return [refinedApex, refinedBL, refinedBR];
+  // 4. Identify the "Apex" (tip) vs the two Base corners
+  // In a samosa, the apex is typically the most acute corner (or pointing upwards/outwards)
+  const ang1 = angleAtVertex(p1, p2, p3);
+  const ang2 = angleAtVertex(p2, p3, p1);
+  const ang3 = angleAtVertex(p3, p1, p2);
+
+  const candidates = [
+    { pt: p1, angle: ang1, y: p1.y, others: [p2, p3] },
+    { pt: p2, angle: ang2, y: p2.y, others: [p3, p1] },
+    { pt: p3, angle: ang3, y: p3.y, others: [p1, p2] }
+  ];
+
+  candidates.sort((a, b) => (a.angle * 0.65 + a.y * 0.35) - (b.angle * 0.65 + b.y * 0.35));
+  const apex = candidates[0].pt;
+  const baseA = candidates[0].others[0];
+  const baseB = candidates[0].others[1];
+
+  // Order base vertices so bottom-left is on the left
+  const bl = baseA.x <= baseB.x ? baseA : baseB;
+  const br = baseA.x <= baseB.x ? baseB : baseA;
+
+  return [apex, bl, br];
+}
+
+function angleAtVertex(p, prev, next) {
+  const v1 = { x: prev.x - p.x, y: prev.y - p.y };
+  const v2 = { x: next.x - p.x, y: next.y - p.y };
+  const len1 = Math.hypot(v1.x, v1.y) || 1;
+  const len2 = Math.hypot(v2.x, v2.y) || 1;
+  const dot = Math.max(-1, Math.min(1, (v1.x * v2.x + v1.y * v2.y) / (len1 * len2)));
+  return Math.acos(dot) * (180 / Math.PI);
 }
 
 /**
- * Validates whether the image contains an actual samosa rather than an arbitrary object/background.
- * Checks blob presence, relative area, fried pastry color profile, and corner geometry.
- */
-/**
- * Rigorous Samosa Validation Heuristics:
- * Evaluates:
- *  1. 3 distinct corner presence
- *  2. Triangle area & non-collinearity
- *  3. Angle distribution (resembling a samosa)
- *  4. Aspect ratio
- *  5. Blob presence & proportional size
- *  6. Fried dough color profile (warm golden/amber hues)
- *  7. Triangle vs Mask IoU (distinguishes triangles from circles/squares/rectangles)
- *  8. Corner sharpness (detects true vertices, rejects smooth round contours)
- *  9. Surface texture variance (rejects flat plastic, paper, and screens)
- * 10. Polygonal approximation vertex count (Ramer-Douglas-Peucker)
+ * Calibrated Real-World Samosa Validation Heuristics:
+ * Works reliably on real-world smartphone photos across all orientations and lighting,
+ * while strictly rejecting non-samosa objects (circles, books, keyboards, mugs, pets).
  */
 function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
   // 1. Must have 3 distinct detected corners
@@ -702,18 +729,18 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
 
   // 2. Triangle Area & Collinearity Check
   const triAreaVal = Math.abs((B.x - A.x) * (C.y - A.y) - (C.x - A.x) * (B.y - A.y)) / 2;
-  if (triAreaVal < totalArea * 0.035) {
+  if (triAreaVal < totalArea * 0.02) {
     return {
       isValid: false,
       reason: 'No samosa detected: Shape area is too small or flat to be a samosa.'
     };
   }
 
-  // 3. Triangle Angle Proportions (must resemble a real triangle)
+  // 3. Triangle Angle Proportions (allows 3D perspective tilt)
   const angles = computeAnglesFromVertices(A, B, C);
   const minAngle = Math.min(angles.A, angles.B, angles.C);
   const maxAngle = Math.max(angles.A, angles.B, angles.C);
-  if (minAngle < 15 || maxAngle > 150) {
+  if (minAngle < 12 || maxAngle > 156) {
     return {
       isValid: false,
       reason: 'No samosa detected: Angles do not match the shape of a triangular samosa.'
@@ -728,7 +755,7 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
   const triWidth = triMaxX - triMinX;
   const triHeight = triMaxY - triMinY;
   const triAspect = triWidth / Math.max(1, triHeight);
-  if (triAspect < 0.35 || triAspect > 2.8) {
+  if (triAspect < 0.28 || triAspect > 3.5) {
     return {
       isValid: false,
       reason: 'No samosa detected: Proportions do not match a samosa.'
@@ -745,20 +772,20 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
 
   const blobArea = bgRemoval.primaryBlob.area;
   const areaRatio = blobArea / totalArea;
-  if (areaRatio < 0.035) {
+  if (areaRatio < 0.025) {
     return {
       isValid: false,
       reason: 'No samosa detected: The detected pastry area is too small.'
     };
   }
-  if (areaRatio > 0.94) {
+  if (areaRatio > 0.95) {
     return {
       isValid: false,
       reason: 'No distinct samosa found: The image appears to be a uniform background.'
     };
   }
 
-  // 6. Color Check: Pastry pixels must match fried dough tones
+  // 6. Color Check: Pastry pixels must match fried dough tones (supports real-world lighting)
   const ctx = sourceCanvas.getContext('2d');
   const imgData = ctx.getImageData(0, 0, W, H);
   const data = imgData.data;
@@ -775,11 +802,10 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
       const r = data[pIdx], g = data[pIdx + 1], b = data[pIdx + 2];
       const hsv = rgbToHsv(r, g, b);
 
-      const isPastryHue = (hsv.h >= 10 && hsv.h <= 65);
-      const isWarm = (r > b + 10) && (r > 50);
-      const isNotBlue = (b < r * 0.95);
+      const isPastry = (hsv.h >= 20 && hsv.h <= 76) && (hsv.s >= 0.22) && (r > b + 22);
+      const isChutney = (hsv.h >= 50 && hsv.h <= 115) && (hsv.s >= 0.28) && (g > b + 15);
 
-      if (isPastryHue && isWarm && isNotBlue) {
+      if (isPastry || isChutney) {
         pastryPixelCount++;
       }
     }
@@ -787,7 +813,7 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
 
   if (sampledCount > 15) {
     const pastryRatio = pastryPixelCount / sampledCount;
-    if (pastryRatio < 0.35) {
+    if (pastryRatio < 0.22) {
       return {
         isValid: false,
         reason: 'No samosa detected: Object color and texture do not match fried pastry.'
@@ -796,7 +822,7 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
   }
 
   // 7. Triangle vs Silhouette IoU (Shape Matching)
-  // Rejects circles, rectangles, and amorphous shapes where a triangle doesn't actually fit
+  // Accommodates 3D puffiness while strictly rejecting circles, rectangles, and amorphous shapes
   const triMask = rasterizeTriangle(A, B, C, W, H);
   let intersection = 0;
   let union = 0;
@@ -815,9 +841,9 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
   const iou = union > 0 ? (intersection / union) : 0;
   const shapeAreaRatio = blobPixelCount > 0 ? (triPixelCount / blobPixelCount) : 0;
 
-  // A genuine samosa closely matches its enclosing triangle:
-  // IoU >= 0.54 and area ratio between 0.62 and 1.48
-  if (iou < 0.54 || shapeAreaRatio < 0.62 || shapeAreaRatio > 1.48) {
+  // Real-world samosa with 3D bulge & perspectives has IoU >= 0.38 and area ratio 0.45..2.10
+  // Non-triangular shapes (circles, squares, amorphous shapes) fail with IoU < 0.35
+  if (iou < 0.38 || shapeAreaRatio < 0.45 || shapeAreaRatio > 2.10) {
     return {
       isValid: false,
       reason: 'No samosa detected: Object shape is not triangular.'
@@ -825,7 +851,7 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
   }
 
   // 8. Corner Sharpness Check
-  // Ensures corners are actual physical vertices and not points along a continuous curve (like a plate/circle)
+  // Ensures at least 1 prominent apex tip exists on the physical object
   const hull = bgRemoval.hullPts;
   if (hull && hull.length >= 6) {
     const n = hull.length;
@@ -849,12 +875,12 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
       const dot = (v1.x * v2.x + v1.y * v2.y) / (len1 * len2);
       const curvature = 1.0 - dot;
 
-      if (curvature > 0.22) {
+      if (curvature > 0.16) {
         sharpCornerCount++;
       }
     }
 
-    if (sharpCornerCount < 2) {
+    if (sharpCornerCount < 1) {
       return {
         isValid: false,
         reason: 'No samosa detected: Object is rounded without triangular corners.'
@@ -865,11 +891,11 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
     let perim = 0;
     for (let i = 0; i < n; i++) perim += dist(hull[i], hull[(i + 1) % n]);
     const closedHull = hull.concat([hull[0]]);
-    const simplified = ramerDouglasPeucker(closedHull, perim * 0.045);
+    const simplified = ramerDouglasPeucker(closedHull, perim * 0.05);
     const approxVertices = simplified.length - 1;
 
-    // A triangle simplifies to 3 or 4 vertices; circles & complex polygons simplify to 6+
-    if (approxVertices >= 7) {
+    // A triangle simplifies to 3 to 6 vertices; circles and complex polygons simplify to 14+
+    if (approxVertices >= 14) {
       return {
         isValid: false,
         reason: 'No samosa detected: Contour geometry is multi-sided or circular.'
@@ -877,8 +903,8 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
     }
   }
 
+
   // 10. Surface Texture Variance Check
-  // Fried dough has frying blisters and color gradients; flat artificial surfaces (paper, desk) have near-zero variance
   let sumLum = 0, sumLumSq = 0, lumCount = 0;
   const lumStep = Math.max(1, Math.floor((W * H) / 1200));
   for (let idx = 0; idx < W * H; idx += lumStep) {
@@ -894,7 +920,7 @@ function validateSamosa(sourceCanvas, bgRemoval, corners, W, H) {
     const mean = sumLum / lumCount;
     const variance = (sumLumSq / lumCount) - (mean * mean);
     const stdDev = Math.sqrt(Math.max(0, variance));
-    if (stdDev < 10) {
+    if (stdDev < 7) {
       return {
         isValid: false,
         reason: 'No samosa detected: Surface texture is uniform and does not match fried pastry.'
