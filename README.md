@@ -85,7 +85,7 @@ For generations, humanity has consumed billions of samosas with complete disrega
 ### Project Demo
 
 #### Video
-- [Add your demo video link here]
+- [https://drive.google.com/file/d/1jiRYFvcaEzxk1uwBkBJ00ubRpM13cYSh/view?usp=drivesdk]
 - *Short demonstration showing photo upload, live camera capture, automatic corner detection, and non-samosa rejection.*
 
 ---
